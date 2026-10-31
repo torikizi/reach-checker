@@ -1,0 +1,40 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+
+[project]
+name = "reachy_mini_ai_inspector"
+version = "0.2.0"
+description = "Local AI visual inspection with Reachy Mini Wireless"
+license = "MIT"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "reachy-mini==1.12.0", "fastapi>=0.115,<1", "uvicorn>=0.30,<1",
+    "pillow>=11,<13"
+]
+keywords = ["reachy-mini-app"]
+
+[project.optional-dependencies]
+mac = ["opencv-python-headless>=4.10,<5", "scikit-learn>=1.6,<2", "httpx>=0.28,<1", "python-multipart>=0.0.20,<1"]
+dev = ["pytest>=8,<10", "build>=1,<2", "paramiko>=3,<5"]
+report = ["reportlab>=4,<5"]
+
+[project.scripts]
+reachy-inspector = "reachy_mini_ai_inspector.cli:main"
+
+[project.entry-points."reachy_mini_apps"]
+reachy_mini_ai_inspector = "reachy_mini_ai_inspector.main:ReachyMiniAiInspector"
+
+[tool.setuptools]
+package-dir = { "" = "." }
+include-package-data = false
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["reachy_mini_ai_inspector*"]
+namespaces = false
+
+[tool.setuptools.package-data]
+reachy_mini_ai_inspector = ["static/*.html", "dashboard/*.html", "dashboard/*.css", "dashboard/*.js"]

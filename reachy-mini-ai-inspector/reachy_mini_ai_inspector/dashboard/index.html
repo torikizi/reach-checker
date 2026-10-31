@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="ja">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Reachy Mini AI Inspector</title><link rel="stylesheet" href="/static/style.css"></head>
+<body>
+<aside class="rail">
+  <a class="brand" href="#" aria-label="Inspector ホーム"><svg viewBox="0 0 42 38" aria-hidden="true"><path d="M9 9 6 2M33 9l3-7"/><rect x="3" y="9" width="36" height="24" rx="12"/><circle cx="14" cy="20" r="4"/><circle cx="28" cy="20" r="4"/></svg><span>REACHY<br>INSPECTOR</span></a>
+  <nav><a href="#criteria">① <span>検査基準</span></a><a href="#references">② <span>正解画像</span></a><a href="#station">③ <span>検査</span></a><a href="#history">▦ <span>検査履歴</span></a><a href="#configuration">⊞ <span>検査設定</span></a></nav>
+  <div class="rail-foot">PHYSICAL AI LAB<br><b>VISUAL INSPECTION</b></div>
+</aside>
+<main>
+<header><div class="eyebrow">REACHY MINI · AI VISUAL INSPECTION</div><div class="header-line"><h1>正解画像を基準に外観を検査</h1><span class="connection" id="connection">● 接続確認中</span></div><p class="subtitle">検査基準を選び、登録した正解画像と対象を比較します。</p></header>
+<div id="mode-banner" class="banner">接続状態を確認しています</div><div id="notice" role="status" aria-live="polite"></div>
+<section id="criteria" class="criteria-card">
+  <div class="section-head"><div><div class="eyebrow">INSPECTION CRITERIA</div><h2>1. 検査基準を選ぶ</h2></div><span id="criterion-summary" class="small">検査基準はまだありません</span></div>
+  <div class="criteria-grid"><label class="stack-label" for="criterion-select">保存した検査基準<select id="criterion-select"><option value="">検査基準を選択してください</option></select></label>
+  <form id="create-criterion" class="create-criterion"><label class="stack-label" for="criterion-name">新しい検査基準の名前<input id="criterion-name" maxlength="80" required placeholder="例：部品Aの正常品"></label><button type="submit" id="create-criterion-button">基準を作成</button></form></div>
+  <p class="small">正解画像と検査設定は、検査基準ごとに保存します。</p>
+</section>
+<section id="references" class="reference-section">
+  <div class="section-head"><div><div class="eyebrow">REFERENCE IMAGES</div><h2>2. 正解画像を登録する</h2></div><strong id="normal-count">0 <small>/ 8枚以上</small></strong></div>
+  <p id="normal-copy">検査基準を作成または選択してから、正解画像を登録してください。</p>
+  <p class="small">検査と同じ撮影範囲・距離・照明で撮った画像を使います。対象は色のある物を1個にしてください。白・黒の対象や細かな傷の検査には対応していません。</p>
+  <form id="upload-form" class="upload-form"><label class="stack-label" for="reference-files">正解画像（複数選択可）<input id="reference-files" type="file" accept="image/jpeg,image/png,image/webp" multiple></label><button id="upload-references" type="submit">選択した画像を登録</button></form>
+  <div class="reference-actions"><span class="small">JPEG・PNG・WebP。1枚10MB以下、1回20枚・合計50MBまで。</span><button id="register" class="quiet">カメラ画像を正解として登録</button></div>
+  <ul id="upload-results" class="upload-results" aria-live="polite"></ul>
+  <div id="reference-list" class="reference-list"><p class="empty">正解画像はまだ登録されていません。</p></div>
+</section>
+<div class="section-head station-heading"><div><div class="eyebrow">INSPECTION</div><h2>3. 対象を検査する</h2></div><span id="inspection-criterion" class="small">検査基準：未選択</span></div>
+<section id="station" class="station">
+  <div class="camera-card"><div class="card-head"><h2>検査カメラ</h2><span id="camera-label">映像受信待ち</span></div><div class="view" id="view"><img id="camera" alt="検査用カメラ映像"><div id="roi"><span>検査範囲</span></div><div id="camera-error">カメラ映像を取得しています</div><span class="view-note">白や灰色の無地の台に、対象を1個置いてください</span></div><div class="camera-foot"><span id="source-label">Reachy Mini カメラ</span><button id="snapshot" class="quiet">静止画を保存</button></div></div>
+  <div class="decision-card"><div class="card-head"><h2>判定結果</h2><span id="model-label">検査基準が必要です</span></div><div id="verdict" class="verdict waiting">READY<span>検査待ち</span></div><div class="score-row"><span>AI異常スコア <small>低いほど正解画像に近い特徴</small></span><strong id="score">—</strong></div><div class="score-track"><i id="score-bar"></i></div><p id="reason">検査基準を選び、正解画像を8枚以上登録してください。</p><div class="result-meta" id="result-meta">判定結果はまだありません</div>
+  <label class="field-label" for="identifier">検査品の識別名</label><input id="identifier" maxlength="80" placeholder="例：A1、B2"><button id="inspect" class="primary">検査を開始 <span>→</span></button>
+  <div class="motion-line"><label><input id="sound" type="checkbox"> Reachyの判定音</label><span id="sound-state">ON</span></div><div class="sound-controls"><select id="sound-verdict" aria-label="試聴する判定音"><option value="OK">OK：高くなる2音</option><option value="NG">NG：低くなる2音</option><option value="REVIEW">REVIEW：同じ高さの3音</option></select><button id="sound-test" class="quiet">音を試す</button></div>
+  <div class="motion-line"><label><input id="motion" type="checkbox"> 判定時にReachyを動かす</label><span id="motion-state">無効</span></div><p class="small">有効にすると撮影位置へ動きます。頭部とアンテナの周囲を確認してください。</p><button id="stop-motion" class="quiet danger">判定時の動作を無効にする</button>
+  <div class="position-controls"><span id="position-state" role="status">撮影位置：未記憶</span><div><button id="remember-position" class="quiet">現在の撮影位置を記憶</button><button id="return-position">撮影位置へ戻す</button></div><p class="small">正解画像と同じ画角で撮影位置を記憶してください。</p></div></div>
+</section>
+<section id="demo-panel" class="demo-panel" hidden><div><b>デモ操作</b><span>合成画像で操作を確認できます</span></div><select id="scene" aria-label="デモの検査対象"><option value="red24">赤2×4</option><option value="blue24">青2×4</option><option value="red28">赤2×8</option><option value="empty">対象なし</option><option value="blur">ぼけた画像</option></select><button id="demo-train">赤2×4のサンプル12枚を登録</button></section>
+<section id="history"><div class="section-head"><div><div class="eyebrow">INSPECTION LOG</div><h2>検査履歴</h2></div><a class="button quiet" href="/api/export.csv" download>CSVを書き出す</a></div><div id="metrics" class="metrics"></div><p class="small">全基準の履歴のうち、「実際の状態」を設定した検査から集計します。REVIEWは判定保留として扱います。</p><div id="history-list" class="history-list"><p class="empty">検査履歴はありません。</p></div><div class="pagination"><button id="prev">前へ</button><span id="page-number">1</span><button id="next">次へ</button></div></section>
+<section id="configuration"><div class="section-head"><div><div class="eyebrow">INSPECTION SETTINGS</div><h2>選択中の基準の設定</h2></div><span class="small">スコアは異常の度合いで、確率ではありません。</span></div><form id="settings"><div class="settings-grid"><label>検査基準名<input name="normal_name" maxlength="80" required></label><label>OK判定の上限<input name="ok_threshold" type="number" step="0.01" min="0.01" max="0.95" required></label><label>NG判定の下限<input name="ng_threshold" type="number" step="0.01" min="0.05" max="0.99" required></label><label>色の違いの許容値<input name="color_tolerance" type="number" step="0.01" min="0.05" max="1" required></label><label>形の違いの許容値<input name="shape_tolerance" type="number" step="0.01" min="0.05" max="1" required></label></div><div class="roi-settings"><b>検査範囲（画像に対する比率）</b><label>左端<input name="roi_x" type="number" step="0.01" min="0" max="0.9" required></label><label>上端<input name="roi_y" type="number" step="0.01" min="0" max="0.9" required></label><label>幅<input name="roi_width" type="number" step="0.01" min="0.1" max="1" required></label><label>高さ<input name="roi_height" type="number" step="0.01" min="0.1" max="1" required></label></div><p class="small">検査範囲を変更した場合は、その範囲に合う正解画像を登録してください。以前の画像と履歴は保持します。</p><button id="save-settings" type="submit">設定を保存</button></form></section>
+<footer>REACHY MINI AI INSPECTOR <span>正解画像の登録 → 基準の選択 → 検査</span><span>v0.2.0</span></footer>
+</main><script src="/static/main.js"></script></body></html>

@@ -1,0 +1,44 @@
+# Local environments and caches
+.venv/
+venv/
+.reference/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.cache/
+.coverage
+.coverage.*
+htmlcov/
+
+# Credentials and machine-specific configuration
+.private/
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+agents.local.md
+.codex/
+.agents/
+.idea/
+.vscode/
+.DS_Store
+*.log
+
+# Inspection data and generated artifacts
+data/
+*.sqlite
+*.sqlite3
+*.sqlite3-*
+*.sqlite-*
+*.db
+*.db-*
+build/
+dist/
+output/
+
+# Internal working notes
+plan.md

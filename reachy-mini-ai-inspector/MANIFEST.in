@@ -1,0 +1,16 @@
+include README.md pyproject.toml index.html style.css
+include LICENSE NOTICE.md
+include setup.sh run.sh .gitignore .gitattributes
+recursive-include reachy_mini_ai_inspector *.py *.html *.css *.js
+recursive-include tests *.py
+recursive-include scripts *.py
+recursive-include doc *.md *.json *.jpg
+exclude plan.md
+recursive-exclude * __pycache__ *.pyc
+prune data
+prune .private
+prune .venv
+prune .reference
+prune output
+global-exclude .env .env.* *.pem *.key *.sqlite* *.db *.db-* *.log .DS_Store
+include requirements-mac-tested.txt

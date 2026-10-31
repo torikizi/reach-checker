@@ -1,0 +1,47 @@
+{
+  "dataset": "SYNTHETIC ONLY - not real hardware validation",
+  "training": 12,
+  "test": 150,
+  "results": {
+    "red24": {
+      "expected": "OK",
+      "count": 30,
+      "counts": {
+        "OK": 30
+      },
+      "ai_executed": 30
+    },
+    "blue24": {
+      "expected": "NG",
+      "count": 30,
+      "counts": {
+        "NG": 30
+      },
+      "ai_executed": 30
+    },
+    "red28": {
+      "expected": "NG",
+      "count": 30,
+      "counts": {
+        "NG": 30
+      },
+      "ai_executed": 30
+    },
+    "empty": {
+      "expected": "REVIEW",
+      "count": 30,
+      "counts": {
+        "REVIEW": 30
+      },
+      "ai_executed": 0
+    },
+    "blur": {
+      "expected": "REVIEW",
+      "count": 30,
+      "counts": {
+        "REVIEW": 30
+      },
+      "ai_executed": 30
+    }
+  }
+}
