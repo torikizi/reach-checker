@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "reachy_mini_ai_inspector"
-version = "0.2.0"
+version = "0.2.7"
 description = "Local AI visual inspection with Reachy Mini Wireless"
 license = "MIT"
 readme = "README.md"

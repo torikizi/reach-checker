@@ -190,20 +190,33 @@ class FakeMini:
         self.pose=np.eye(4)
         self.body_yaw=0.
         self.joint_calls=[]
+        self.antennas=np.zeros(2)
+    def set_automatic_body_yaw(self, enabled):
+        self.auto_yaw = enabled
+
+    def disable_wobbling(self):
+        self.wobbling = False
+
+    def stop_head_tracking(self):
+        self.head_tracking = False
+
+    def enable_motors(self): self.motors_enabled = True
     def get_frame(self): return demo_image() if self.available else None
     def goto_target(self,**kwargs):
         self.calls.append(kwargs)
         self.pose=np.array(kwargs['head'])
+        if kwargs.get('antennas') is not None:self.antennas=np.asarray(kwargs['antennas'])
         if kwargs.get('body_yaw') is not None:self.body_yaw=kwargs['body_yaw']
     def get_current_head_pose(self): return self.pose.copy()
     def get_current_joint_positions(self):
-        return [self.body_yaw,*self.pose[:3,3],*Rotation.from_matrix(self.pose[:3,:3]).as_euler('xyz')],[0,0]
-    def _set_joint_positions(self,head_joint_positions):
+        return [self.body_yaw,*self.pose[:3,3],*Rotation.from_matrix(self.pose[:3,:3]).as_euler('xyz')],self.antennas.tolist()
+    def _set_joint_positions(self,head_joint_positions,antennas_joint_positions=None):
+        if antennas_joint_positions is not None:self.antennas=np.asarray(antennas_joint_positions)
         joints=head_joint_positions;self.body_yaw=joints[0]
         self.pose=np.eye(4);self.pose[:3,3]=joints[1:4];self.pose[:3,:3]=Rotation.from_euler('xyz',joints[4:7]).as_matrix()
-    def _goto_joint_positions(self,head_joint_positions,duration):
+    def _goto_joint_positions(self,head_joint_positions,duration,antennas_joint_positions=None):
         self.joint_calls.append(head_joint_positions)
-        self._set_joint_positions(head_joint_positions)
+        self._set_joint_positions(head_joint_positions,antennas_joint_positions=antennas_joint_positions)
 
 
 def test_bridge_auth_stale_and_motion_defaults():
@@ -229,11 +242,11 @@ def test_bridge_queue_camera_motion_stop():
         robot.request('enable')
         assert robot.motion_enabled
         result=robot.request('react','NG')
-        assert result['performed'] and len(mini.calls)==3 and len(mini.joint_calls)==2
+        assert result['performed'] and len(mini.calls)==5 and len(mini.joint_calls)==1
         for call in mini.calls:
             rot=call['head'][:3,:3]
             angle=np.arccos(np.clip((np.trace(rot)-1)/2,-1,1))
-            assert angle <= np.deg2rad(11)
+            assert angle <= np.deg2rad(17)
             assert call['duration']>=.5
         robot.disable()
         assert not robot.request('react','OK')['performed']

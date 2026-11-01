@@ -7,7 +7,11 @@ import numpy as np
 
 POSITION_TOLERANCE_MM = 1.5
 ANGLE_TOLERANCE_DEG = .6
-JOINT_TOLERANCE_DEG = .35
+JOINT_TOLERANCE_DEG = 8.0
+JOINT_STABILITY_DEG = .35
+ANTENNA_TOLERANCE_DEG = 5.0
+RETURN_POSITION_TOLERANCE_MM = 5.0
+RETURN_ROTATION_TOLERANCE_DEG = 5.0
 
 
 def checked_pose(value):
@@ -44,6 +48,13 @@ def read_joints(mini):
     return joints
 
 
+def read_antennas(mini):
+    antennas = np.asarray(mini.get_current_joint_positions()[1], dtype=float)
+    if antennas.shape != (2,) or not np.isfinite(antennas).all() or np.max(np.abs(antennas)) > np.pi:
+        raise RuntimeError("アンテナモーターの現在角度を取得できません")
+    return antennas
+
+
 def position_error(actual, body_yaw, desired, desired_body):
     delta = np.arctan2(np.sin(body_yaw-desired_body), np.cos(body_yaw-desired_body))
     return {"position_mm": float(np.linalg.norm(actual[:3, 3]-desired[:3, 3])*1000),
@@ -52,13 +63,19 @@ def position_error(actual, body_yaw, desired, desired_body):
 
 
 def in_position(error):
+    if not error.get("antenna_max_deg", 0) <= ANTENNA_TOLERANCE_DEG:
+        return False
     if "joint_max_deg" in error:
-        return error["joint_max_deg"] <= JOINT_TOLERANCE_DEG
+        # Encoder agreement alone does not establish a stable camera view.
+        return (error["joint_max_deg"] <= JOINT_TOLERANCE_DEG
+                and error["position_mm"] <= RETURN_POSITION_TOLERANCE_MM
+                and error["rotation_deg"] <= RETURN_ROTATION_TOLERANCE_DEG
+                and error["body_deg"] <= ANGLE_TOLERANCE_DEG)
     return error["position_mm"] <= POSITION_TOLERANCE_MM and max(error["rotation_deg"], error["body_deg"]) <= ANGLE_TOLERANCE_DEG
 
 
 class InspectionPosition:
-    def __init__(self, pose, body_yaw, joints=None, joint_target=None):
+    def __init__(self, pose, body_yaw, joints=None, joint_target=None, command_joints=None, antennas=None):
         self.pose = checked_pose(pose)
         self.body_yaw = float(body_yaw)
         if not np.isfinite(self.body_yaw) or abs(self.body_yaw) > np.pi:
@@ -69,19 +86,35 @@ class InspectionPosition:
         self.joints = None if joints is None else np.asarray(joints, dtype=float)
         if self.joints is not None and (self.joints.shape != (7,) or not np.isfinite(self.joints).all() or np.max(np.abs(self.joints)) > np.pi):
             raise RuntimeError("保存したモーター角度が不正です")
-        self.joint_target = None if self.joints is None else self.joints.copy()
+        # The measured reference and the command that produced it can differ
+        # under load. Only pass a command independently observed at that pose;
+        # never infer an anchor by absorbing a failed return's residual.
+        self.command_joints = None if self.joints is None else self.joints.copy()
+        if command_joints is not None:
+            anchor = np.asarray(command_joints, dtype=float)
+            if self.joints is None or anchor.shape != (7,) or not np.isfinite(anchor).all() or np.max(np.abs(anchor)) > np.pi:
+                raise RuntimeError("保存したモーター指令角度が不正です")
+            self.command_joints = anchor.copy()
+        self.joint_target = None if self.command_joints is None else self.command_joints.copy()
         if joint_target is not None:
             self.joint_target = np.asarray(joint_target, dtype=float)
             self.check_joint_target(self.joint_target)
+        self.antennas = None if antennas is None else np.asarray(antennas, dtype=float)
+        if self.antennas is not None:
+            if self.antennas.shape != (2,) or not np.isfinite(self.antennas).all() or np.max(np.abs(self.antennas)) > np.pi:
+                raise RuntimeError("保存したアンテナ角度が不正です")
+            self.antennas = self.antennas.copy()
 
     def check_joint_target(self, target):
-        if self.joints is None or target.shape != (7,) or not np.isfinite(target).all() or np.max(np.abs(target)) > np.pi or np.max(np.abs(target-self.joints)) > np.deg2rad(6):
+        if self.command_joints is None or target.shape != (7,) or not np.isfinite(target).all() or np.max(np.abs(target)) > np.pi or np.max(np.abs(target-self.command_joints)) > np.deg2rad(6):
             raise RuntimeError("撮影位置の補正範囲を超えました。モーターと周囲を確認してください")
 
     def error(self, mini):
         error = position_error(*read_position(mini), self.pose, self.body_yaw)
         if self.joints is not None:
             error["joint_max_deg"] = float(np.rad2deg(np.max(np.abs(read_joints(mini)-self.joints))))
+        if self.antennas is not None:
+            error["antenna_max_deg"] = float(np.rad2deg(np.max(np.abs(read_antennas(mini)-self.antennas))))
         return error
 
     def save(self, path):
@@ -90,7 +123,7 @@ class InspectionPosition:
         path = Path(path)
         path.parent.mkdir(parents=True, exist_ok=True)
         temporary = path.with_suffix(".tmp")
-        temporary.write_text(json.dumps({"version": 3, "pose": self.pose.tolist(), "body_yaw": self.body_yaw, "joints": None if self.joints is None else self.joints.tolist(), "joint_target": None if self.joint_target is None else self.joint_target.tolist()}))
+        temporary.write_text(json.dumps({"version": 5, "pose": self.pose.tolist(), "body_yaw": self.body_yaw, "joints": None if self.joints is None else self.joints.tolist(), "joint_target": None if self.joint_target is None else self.joint_target.tolist(), "command_joints": None if self.command_joints is None else self.command_joints.tolist(), "antennas": None if self.antennas is None else self.antennas.tolist()}))
         temporary.replace(path)
 
     @classmethod
@@ -98,6 +131,10 @@ class InspectionPosition:
         if path is None or not Path(path).exists():
             return None
         data = json.loads(Path(path).read_text())
-        if data.get("version") not in (1, 2, 3):
+        if data.get("version") not in (1, 2, 3, 4, 5):
             raise RuntimeError("保存した撮影位置の形式を確認してください")
-        return cls(data["pose"], data["body_yaw"], data.get("joints"), data.get("joint_target"))
+        # Legacy versions had no separately observed command. Retain their
+        # measured reference as the anchor, keeping the previous correction cap.
+        command_joints = data.get("command_joints") if data["version"] >= 4 else None
+        antennas = data.get("antennas") if data["version"] >= 5 else None
+        return cls(data["pose"], data["body_yaw"], data.get("joints"), data.get("joint_target"), command_joints, antennas)

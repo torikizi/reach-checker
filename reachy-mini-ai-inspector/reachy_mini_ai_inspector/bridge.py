@@ -14,7 +14,7 @@ import numpy as np
 from pydantic import BaseModel
 
 from .sounds import verdict_samples
-from .position import InspectionPosition, in_position, position_error, read_position, read_joints
+from .position import InspectionPosition, JOINT_TOLERANCE_DEG, JOINT_STABILITY_DEG, in_position, position_error, read_position, read_joints, read_antennas, angle_degrees
 
 
 @dataclass
@@ -74,7 +74,7 @@ class RobotIO:
             self.commands.put_nowait(cmd)
         except queue.Full:
             raise RuntimeError("ロボットは処理中です") from None
-        if not cmd.done.wait(12):
+        if not cmd.done.wait(20):
             cmd.cancelled = True
             self.disable()
             raise RuntimeError("ロボットの応答がタイムアウトしました。動作を無効化しました")
@@ -117,14 +117,16 @@ class RobotIO:
             stop_event.wait(.03)
         raise RuntimeError("新しいカメラフレームを取得できません")
 
-    def remember_position(self, mini, stop_event):
+    def remember_position(self, mini, stop_event, command_joints=None):
         pose, body = read_position(mini)
         joints = read_joints(mini)
         if stop_event.wait(.25):
             raise RuntimeError("アプリ停止中")
         if not in_position(position_error(*read_position(mini), pose, body)):
             raise RuntimeError("頭部が動いています。静止してから撮影位置を記憶してください")
-        position = InspectionPosition(pose, body, joints)
+        if np.max(np.abs(read_joints(mini)-joints)) > np.deg2rad(JOINT_STABILITY_DEG):
+            raise RuntimeError("頭部が動いています。静止してから撮影位置を記憶してください")
+        position = InspectionPosition(pose, body, joints, command_joints=command_joints, antennas=read_antennas(mini))
         if not in_position(position.error(mini)):
             raise RuntimeError("頭部が動いています。静止してから撮影位置を記憶してください")
         position.save(self.position_path)
@@ -133,29 +135,101 @@ class RobotIO:
         self.position_error = position.error(mini)
         return {"saved": True, "reason": "現在の撮影位置を記憶しました"}
 
-    def return_to_position(self, mini, stop_event, allowed):
+    def calibrate_position(self, mini, stop_event):
+        # UI-confirmed setup: establish a known held command, then record the
+        # measured pose it actually produces. These are not interchangeable.
+        generation = self.generation
+        allowed = lambda: not stop_event.is_set() and self.generation == generation
+        if not allowed():
+            raise RuntimeError("動作停止")
+        pose, body = read_position(mini)
+        InspectionPosition(pose, body, read_joints(mini))  # Validate before movement.
+        self.moving = True
+        self.pose_valid = False
+        self.frame = None
+        try:
+            mini.enable_motors()
+            if stop_event.wait(.15) or not allowed():
+                raise RuntimeError("動作停止")
+            command = read_joints(mini)
+            mini._goto_joint_positions(head_joint_positions=command.tolist(), duration=1.)
+            if not allowed():
+                raise RuntimeError("動作停止")
+            mini._set_joint_positions(head_joint_positions=command.tolist())
+            if stop_event.wait(.5) or not allowed():
+                raise RuntimeError("動作停止")
+            deadline = time.monotonic() + 2.
+            previous = read_joints(mini)
+            stable = 0
+            while time.monotonic() < deadline:
+                if stop_event.wait(.15) or not allowed():
+                    raise RuntimeError("動作停止")
+                current = read_joints(mini)
+                stable = stable + 1 if np.max(np.abs(current-previous)) <= np.deg2rad(JOINT_STABILITY_DEG) else 0
+                previous = current
+                if stable >= 2:
+                    result = self.remember_position(mini, stop_event, command_joints=command)
+                    result["reason"] = "撮影位置と復帰用の指令角度を記憶しました。画角を確認してください"
+                    return result
+            raise RuntimeError("首が静止しません。撮影位置は更新していません")
+        finally:
+            self.moving = False
+            self.frame = None
+
+    def return_to_position(self, mini, stop_event, allowed, already_home=False):
         position = self.position
         if position.joints is None:
             raise RuntimeError("撮影位置のモーター角度が未記録です。正しい画角で「今の撮影位置を記憶」を押してください")
+        # A saved measurement is not necessarily the command that produced it.
+        # Re-commanding it can introduce servo bias even when already home.
+        self.position_error = position.error(mini)
+        initial_joints = read_joints(mini)
+        # Only skip a truly aligned HOME. The normal photography envelope has
+        # too little margin to call a boundary pose "already returned".
+        tight_home = in_position({key: value for key, value in self.position_error.items()
+                                  if key != "joint_max_deg"})
+        if already_home and tight_home:
+            if stop_event.wait(.75) or not allowed():
+                return {"returned": False, "reason": "動作停止"}
+            self.position_error = position.error(mini)
+            still_tight = in_position({key: value for key, value in self.position_error.items()
+                                       if key != "joint_max_deg"})
+            if still_tight and np.max(np.abs(read_joints(mini)-initial_joints)) <= np.deg2rad(JOINT_STABILITY_DEG):
+                self.pose_valid = True
+                return {"returned": True, "return_error": self.position_error, "retries": 0}
+        if not allowed():
+            return {"returned": False, "reason": "動作停止"}
+        mini.goto_target(head=position.target, antennas=position.antennas.tolist(),
+                         duration=.8, method="minjerk", body_yaw=position.body_yaw)
         target = position.joint_target.copy()
         for attempt in range(3):
             if not allowed():
                 return {"returned": False, "reason": "動作停止"}
             # SDK 1.12.0's joint interpolation avoids repeated FK -> IK errors.
             # These underscored SDK methods are version-pinned and hardware-tested.
-            mini._goto_joint_positions(head_joint_positions=target.tolist(), duration=1.)
+            mini._goto_joint_positions(head_joint_positions=target.tolist(), antennas_joint_positions=position.antennas.tolist(), duration=1.)
             if not allowed():
                 return {"returned": False, "reason": "動作停止"}
-            mini._set_joint_positions(head_joint_positions=target.tolist())
-            if stop_event.wait(.35) or not allowed():
-                return {"returned": False, "reason": "動作停止"}
-            self.position_error = position.error(mini)
-            if in_position(self.position_error):
-                # Two consecutive readings after settling, before releasing the camera.
+            mini._set_joint_positions(head_joint_positions=target.tolist(), antennas_joint_positions=position.antennas.tolist())
+            # Motor commands are asynchronous. Allow the measured joints to settle
+            # before issuing a bias correction; two readings must agree in range.
+            deadline = time.monotonic() + 2.5
+            stable_since = None
+            stable_anchor = None
+            while time.monotonic() < deadline:
                 if stop_event.wait(.15) or not allowed():
                     return {"returned": False, "reason": "動作停止"}
                 self.position_error = position.error(mini)
-                if in_position(self.position_error):
+                current = np.r_[read_joints(mini), read_antennas(mini)]
+                if not in_position(self.position_error):
+                    stable_since, stable_anchor = None, None
+                    continue
+                if stable_anchor is None or np.max(np.abs(current-stable_anchor)) > np.deg2rad(JOINT_STABILITY_DEG):
+                    stable_since, stable_anchor = time.monotonic(), current.copy()
+                    continue
+                # Compare against one anchor across the whole window. Adjacent
+                # readings alone incorrectly accept a slowly creeping head.
+                if time.monotonic()-stable_since >= .75:
                     position.joint_target = target.copy()
                     position.save(self.position_path)
                     self.pose_valid = True
@@ -164,37 +238,82 @@ class RobotIO:
                 correction = np.clip(position.joints-read_joints(mini), -np.deg2rad(2), np.deg2rad(2))
                 target += correction
                 position.check_joint_target(target)
-        raise RuntimeError("撮影位置への復帰を確認できません。次の検査を停止しました。モーターと周囲を確認してください")
+        error_deg = self.position_error["joint_max_deg"]
+        raise RuntimeError(
+            f"撮影位置への復帰を確認できません。モーター角度の最大差 {error_deg:.2f}度"
+            f"（許容 {JOINT_TOLERANCE_DEG:.2f}度）、"
+            f"頭部位置差 {self.position_error['position_mm']:.2f}mm（許容5mm）、"
+            f"回転差 {self.position_error['rotation_deg']:.2f}度（許容5度）、"
+            f"胴体差 {self.position_error['body_deg']:.2f}度（許容0.6度）、"
+            f"アンテナ差 {self.position_error.get('antenna_max_deg', 0):.2f}度（許容5度）。次の検査を停止しました。"
+            "モーターの有効状態・他アプリとの競合・周囲の障害物を確認してください"
+        )
 
     def react(self, mini, verdict, stop_event, manual_return=False):
         from reachy_mini.utils import create_head_pose
-        poses = {"OK": [(0, 8, 0), (0, -4, 0)],
-                 "NG": [(0, 0, -10), (0, 0, 10), (0, 0, -6)],
-                 "REVIEW": [(9, 0, 0)], "HOME": []}
+        # roll, pitch, yaw (degrees), antenna offsets (right, left; degrees).
+        poses = {"OK": [(-6, -7, 0, -25, 25), (6, 8, 0, 10, -10),
+                        (-4, -6, 0, -25, 25), (4, 7, 0, 5, -5)],
+                 "NG": [(0, 0, -16, 0, 0), (0, 0, 16, 0, 0),
+                        (0, 0, -16, 0, 0), (0, 0, 16, 0, 0)],
+                 "REVIEW": [(9, 0, 0, 0, 0)], "HOME": []}
         if not self.motion_enabled and not manual_return:
             return {"performed": False, "reason": "モーション無効"}
         if self.position is None:
             raise RuntimeError("先に撮影位置を記憶してください")
         generation = self.generation
         allowed = lambda: not stop_event.is_set() and self.generation == generation and (manual_return or self.motion_enabled)
+        if not allowed():
+            return {"performed": False, "returned": False, "reason": "動作停止"}
+        if self.position.antennas is None:
+            # Migrate legacy head references without moving or overwriting them.
+            # Sleep-position antennas are not a usable expressive baseline.
+            antennas = read_antennas(mini)
+            if np.max(np.abs(antennas)) > np.pi/2:
+                from reachy_mini.reachy_mini import INIT_ANTENNAS_JOINT_POSITIONS
+                antennas = np.asarray(INIT_ANTENNAS_JOINT_POSITIONS, dtype=float)
+            self.position.antennas = antennas.copy()
+            self.position.save(self.position_path)
         self.moving = True
         self.pose_valid = False
         self.frame = None
         try:
+            # Only explicit UI enable/manual-return reaches HOME; never enable
+            # torque just because the app or camera starts.
+            if verdict == "HOME":
+                if not allowed():
+                    return {"performed": False, "returned": False, "reason": "動作停止"}
+                mini.enable_motors()
+                if stop_event.wait(.15) or not allowed():
+                    return {"performed": False, "returned": False, "reason": "動作停止"}
+            if not allowed():
+                return {"performed": False, "returned": False, "reason": "動作停止"}
+            mini.set_automatic_body_yaw(False)
+            mini.disable_wobbling()
+            mini.stop_head_tracking()
             gesture_error = ""
             try:
-                for roll, pitch, yaw in poses[verdict]:
+                plan = []
+                for roll, pitch, yaw, right, left in poses[verdict]:
+                    target = self.position.target @ create_head_pose(roll=roll, pitch=pitch, yaw=yaw, degrees=True)
+                    antennas = self.position.antennas + np.deg2rad([right, left])
+                    if angle_degrees(target[:3, :3]) > 25.00001 or np.linalg.norm(target[:3, 3]) > .025:
+                        raise RuntimeError("撮影姿勢が動作範囲の端に近いため、リアクションを実行できません")
+                    if np.max(np.abs(antennas)) > np.pi/2:
+                        raise RuntimeError("アンテナの撮影姿勢を中央付近で記憶し直してください")
+                    plan.append((target, antennas))
+                for target, antennas in plan:
                     if not allowed():
                         return {"performed": False, "returned": False, "reason": "動作停止"}
-                    target = self.position.target @ create_head_pose(roll=roll, pitch=pitch, yaw=yaw, degrees=True)
-                    mini.goto_target(head=target, duration=.8, method="minjerk", body_yaw=self.position.body_yaw)
+                    mini.goto_target(head=target, antennas=antennas.tolist(), duration=.65,
+                                     method="minjerk", body_yaw=self.position.body_yaw)
             except Exception as exc:
                 gesture_error = str(exc)
-            returned = self.return_to_position(mini, stop_event, allowed)
+            returned = self.return_to_position(mini, stop_event, allowed, already_home=verdict == "HOME")
             if not returned["returned"]:
                 return {"performed": False, **returned}
             return {"performed": not bool(gesture_error), **returned,
-                    "reason": (f"動作エラー：{gesture_error} / " if gesture_error else f"{verdict} / ") + "撮影位置へ復帰済み"}
+                    "reason": (f"動作エラー：{gesture_error} / " if gesture_error else f"{verdict} / ") + "頭部とアンテナが撮影位置へ自動復帰済み"}
         except Exception as exc:
             self.disable()
             return {"performed": False, "returned": False, "reason": str(exc), "return_error": self.position_error}
@@ -246,7 +365,7 @@ class RobotIO:
                     if cmd:
                         if cmd.cancelled or time.monotonic() > cmd.deadline:
                             raise RuntimeError("期限切れ操作を破棄しました")
-                        if cmd.kind in ("enable", "react", "home", "remember") and cmd.generation != self.generation:
+                        if cmd.kind in ("enable", "react", "home", "remember", "calibrate") and cmd.generation != self.generation:
                             raise RuntimeError("無効化前の操作を破棄しました")
                         if cmd.kind == "snapshot":
                             cmd.result = self.snapshot(mini, stop_event)
@@ -256,6 +375,10 @@ class RobotIO:
                             if not self.status()["camera_ready"]:
                                 raise RuntimeError("カメラ接続後に撮影位置を記憶してください")
                             cmd.result = self.remember_position(mini, stop_event)
+                        elif cmd.kind == "calibrate":
+                            if not self.status()["camera_ready"]:
+                                raise RuntimeError("カメラ接続後に撮影位置を記憶してください")
+                            cmd.result = self.calibrate_position(mini, stop_event)
                         elif cmd.kind == "home":
                             cmd.result = self.react(mini, "HOME", stop_event, manual_return=True)
                         elif cmd.kind == "enable":
@@ -290,7 +413,7 @@ class RobotIO:
                 try:
                     # Shutdown is allowed one gentle return, only if motion was enabled.
                     if self.position.joints is not None:
-                        mini._goto_joint_positions(head_joint_positions=self.position.joint_target.tolist(), duration=1.)
+                        mini._goto_joint_positions(head_joint_positions=self.position.joint_target.tolist(), antennas_joint_positions=None if self.position.antennas is None else self.position.antennas.tolist(), duration=1.)
                 except Exception:
                     pass
             self.disable()
@@ -356,6 +479,13 @@ def add_routes(app: FastAPI, robot: RobotIO):
     def remember(authorization: str | None = Header(default=None)):
         auth(authorization)
         return command("remember")
+
+    @app.post("/api/position/calibrate")
+    def calibrate(body: PositionAction, authorization: str | None = Header(default=None)):
+        auth(authorization)
+        if not body.physically_checked:
+            raise HTTPException(422, "実機周囲を確認してください")
+        return command("calibrate")
 
     @app.post("/api/position/return")
     def return_position(body: PositionAction, authorization: str | None = Header(default=None)):

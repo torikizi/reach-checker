@@ -5,26 +5,51 @@ const el = (tag, cls, text) => {
   if (text !== undefined) node.textContent = text;
   return node;
 };
-let offset = 0, busy = false, currentStatus = null, frameURL = null, noticeTimer;
+let offset = 0, busy = false, currentStatus = null, frameURL = null, noticeTimer, frameFailure = '';
 let settingsKey = null, referenceKey = null, shownResult = null, statusLoading = false;
-
-$('camera').onload = () => {
-  if ($('camera').naturalWidth) $('view').style.aspectRatio = `${$('camera').naturalWidth}/${$('camera').naturalHeight}`;
-};
 
 async function api(path, data) {
   const form = data instanceof FormData;
   const headers = {'X-Inspector-UI': '1'};
   if (data !== undefined && !form) headers['Content-Type'] = 'application/json';
-  const response = await fetch(path, {
+  const {response, body: text} = await InspectorTransport.request(path, {
     method: data === undefined ? 'GET' : 'POST', headers,
     body: data === undefined ? undefined : form ? data : JSON.stringify(data)
   });
-  const text = await response.text();
   let value;
   try { value = JSON.parse(text); } catch { value = {detail: text}; }
   if (!response.ok) throw Error(typeof value.detail === 'string' ? value.detail : '入力内容を確認してください。');
   return value;
+}
+
+function cameraLabel() {
+  const robot = currentStatus?.robot;
+  $('camera-label').textContent = robot?.moving ? '動作中・撮影位置への復帰待ち'
+    : frameFailure ? (frameURL ? '前回の映像・更新を再試行中' : '映像を再取得中')
+    : robot?.pose_valid === false ? (frameURL ? 'ライブ映像・撮影位置の復帰が必要' : '撮影位置の復帰が必要・映像受信待ち')
+    : frameURL ? (currentStatus?.mode === 'demo' ? 'デモ画像' : 'ライブ映像') : '映像受信待ち';
+}
+
+function cameraError(message) {
+  frameFailure = message;
+  const panel = $('camera-error');
+  panel.textContent = (frameURL ? '前回の映像を表示中。' : '') + message;
+  // Keep a usable last frame visible while a later request is retried.
+  Object.assign(panel.style, frameURL
+    ? {display:'block', inset:'auto 0 0', padding:'10px', background:'#243131dd'}
+    : {display:'grid', inset:'0', padding:'25px', background:'#243131ea'});
+  cameraLabel();
+}
+
+function positionLabel(robot) {
+  if (!robot.position_saved) return '撮影位置：未記憶';
+  const label = robot.moving ? '撮影位置：動作・自動復帰中'
+    : robot.pose_valid ? '撮影位置：確認済み' : '撮影位置：復帰が必要です';
+  const error = robot.position_error || {}, parts = [];
+  for (const [key, name, unit] of [['position_mm','位置','mm'],['rotation_deg','向き','°']]) {
+    if (Number.isFinite(error[key])) parts.push(`${name}${error[key].toFixed(1)}${unit}`);
+  }
+  return label + (parts.length ? `（${robot.moving ? '前回確認のずれ' : 'ずれ'}：${parts.join('・')}）` : '');
 }
 
 function notice(text, error = false) {
@@ -112,7 +137,7 @@ async function status() {
     $('connection').textContent = s.robot.connected ? (demo ? '● デモ接続済み' : '● Reachy 接続済み') : '● Reachy 未接続';
     $('connection').className = 'connection '+(s.robot.connected ? 'online' : '');
     $('source-label').textContent = demo ? 'デモ用の合成画像' : 'Reachy Mini Wireless カメラ';
-    $('camera-label').textContent = demo ? 'デモ画像' : 'ライブ映像';
+    cameraLabel();
     $('normal-count').replaceChildren(document.createTextNode(s.normal_count+' '), el('small','',`/ ${s.minimum_references}枚以上`));
     $('criterion-summary').textContent = !selected ? '検査基準を作成してください' : `${selected.name}：正解画像${s.normal_count}枚`;
     $('inspection-criterion').textContent = selected ? `検査基準：${selected.name}` : '検査基準：未選択';
@@ -122,8 +147,8 @@ async function status() {
     $('model-label').textContent = !selected ? '検査基準が必要です' : s.model_ready ? 'AI学習済み' : '正解画像が不足しています';
     $('sound').checked = s.sound_enabled; $('sound-state').textContent = s.sound_enabled ? 'ON' : 'OFF';
     $('motion').checked = s.robot.motion_enabled; $('motion-state').textContent = s.robot.motion_enabled ? '有効' : '無効';
-    $('position-state').textContent = s.robot.position_saved ? (s.robot.pose_valid ? '撮影位置：記憶済み' : '撮影位置：復帰が必要です') : '撮影位置：未記憶';
-    $('position-state').className = s.robot.position_saved && !s.robot.pose_valid ? 'danger' : '';
+    $('position-state').textContent = positionLabel(s.robot);
+    $('position-state').className = s.robot.position_saved && !s.robot.pose_valid && !s.robot.moving ? 'danger' : '';
     const key = selected?.id || '';
     if (settingsKey !== key) {
       fillSettings(s.settings); settingsKey = key; shownResult = null;
@@ -133,18 +158,34 @@ async function status() {
     if (referenceKey !== nextKey) { await criteriaList(); await references(); referenceKey = nextKey; }
     pendingResult(s); controls();
   } catch (e) {
-    $('connection').textContent = '● 検品サーバーに接続できません'; $('connection').className = 'connection';
-    $('camera-error').textContent = 'Macの検品サーバーを起動してください。'; $('camera-error').style.display = 'grid';
+    $('connection').textContent = '● 状態の更新に失敗・再試行中'; $('connection').className = 'connection';
+    $('connection').title = e.message;
+    if (!frameURL) cameraError(e.message + ' Macの検品サーバーの起動を確認してください。');
   } finally { statusLoading = false; }
 }
 async function frameLoop() {
+  let next = null;
   try {
-    const response = await fetch('/api/frame',{cache:'no-store'});
-    if (!response.ok) throw Error(currentStatus?.robot.moving ? '動作中です。撮影位置への復帰後に映像を更新します。' : '映像を取得できません。Reachyの接続とアプリの起動を確認してください。');
-    const next = URL.createObjectURL(await response.blob()); $('camera').src = next;
-    if (frameURL) URL.revokeObjectURL(frameURL); frameURL = next; $('camera-error').style.display = 'none';
-  } catch (e) { $('camera-error').textContent = e.message; $('camera-error').style.display = 'grid'; }
-  finally { setTimeout(frameLoop,300); }
+    const {body: blob} = await InspectorTransport.request('/api/frame', {cache:'no-store'}, {
+      timeoutMs:4000,
+      timeoutMessage:'映像の受信がタイムアウトしました。接続を確認しながら再取得します。',
+      read: async response => {
+        if (!response.ok) throw Error(currentStatus?.robot.moving ? '動作中です。撮影位置への復帰後に映像を更新します。' : '映像を取得できません。Reachyの接続とアプリの起動を確認してください。');
+        const value = await response.blob();
+        if (!value.size || !value.type.toLowerCase().startsWith('image/')) throw Error('画像を受信できませんでした。再取得します。');
+        return value;
+      }
+    });
+    next = URL.createObjectURL(blob);
+    const image = await InspectorTransport.decodeImage(next);
+    image.id = 'camera'; image.alt = '検査用カメラ映像';
+    $('camera').replaceWith(image);
+    $('view').style.aspectRatio = `${image.naturalWidth}/${image.naturalHeight}`;
+    const previous = frameURL; frameURL = next; next = null;
+    if (previous) URL.revokeObjectURL(previous);
+    frameFailure = ''; $('camera-error').style.display = 'none'; cameraLabel();
+  } catch (e) { cameraError(e.message); }
+  finally { if (next) URL.revokeObjectURL(next); setTimeout(frameLoop,300); }
 }
 function result(record) {
   shownResult = record; $('verdict').className = 'verdict '+record.verdict;
@@ -215,8 +256,8 @@ $('stop-motion').onclick = async () => {
   catch (e) { notice(e.message,true); }
 };
 $('remember-position').onclick = () => {
-  if (!confirm('現在の撮影位置を記憶します。正解画像と同じ画角になっていますか？')) return;
-  action(async () => { const r = await api('/api/position/remember',{}); notice(r.reason); });
+  if (!confirm('首を少し動かして撮影姿勢を安定させ、復帰用の指令値と一緒に記憶します。頭部・胴体・アンテナの周囲に障害物がなく、手を離していますか？ 記憶後は画角を確認してください。')) return;
+  action(async () => { const r = await api('/api/position/remember',{physically_checked:true}); notice(r.reason); });
 };
 $('return-position').onclick = () => {
   if (!confirm('記憶した撮影位置へReachyが動きます。頭部とアンテナの周囲に障害物がないことを確認しましたか？')) return;

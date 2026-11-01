@@ -308,13 +308,15 @@ def create_app(provider, data_dir):
         with inspector.operation():
             return inspector.play_sound(body.verdict)
 
-    @app.post("/api/position/remember")
-    def remember_position():
-        with inspector.operation():
-            return provider.remember_position()
-
     class ReturnPosition(BaseModel):
         physically_checked: bool = False
+
+    @app.post("/api/position/remember")
+    def remember_position(body: ReturnPosition):
+        if not body.physically_checked:
+            raise HTTPException(422, "実機周囲を確認してください")
+        with inspector.operation():
+            return provider.remember_position()
 
     @app.post("/api/position/return")
     def return_position(body: ReturnPosition):

@@ -93,7 +93,7 @@ class BridgeProvider:
 
     def __init__(self, url, token):
         self.client = httpx.Client(base_url=url.rstrip("/"), headers={"Authorization": f"Bearer {token}"},
-                                   timeout=httpx.Timeout(15, connect=3), trust_env=False)
+                                   timeout=httpx.Timeout(25, connect=3), trust_env=False)
 
     def call(self, method, path, **kwargs):
         try:
@@ -110,10 +110,11 @@ class BridgeProvider:
             raise RuntimeError("本体アプリに接続できません。電源・Wi-Fi・Applicationsの起動を確認してください") from exc
 
     def frame(self, fresh=False):
-        return self.call("POST" if fresh else "GET", "/api/snapshot" if fresh else "/api/frame").content
+        return self.call("POST" if fresh else "GET", "/api/snapshot" if fresh else "/api/frame",
+                         timeout=httpx.Timeout(8 if fresh else 4, connect=2)).content
 
     def health(self):
-        return self.call("GET", "/api/health").json()
+        return self.call("GET", "/api/health", timeout=httpx.Timeout(4, connect=2)).json()
 
     def motion(self, enabled, checked=False):
         return self.call("POST", "/api/motion", json={"enabled": enabled, "physically_checked": checked}).json()
@@ -125,7 +126,7 @@ class BridgeProvider:
         return self.call("POST", "/api/sound", json={"verdict": verdict}).json()
 
     def remember_position(self):
-        return self.call("POST", "/api/position/remember").json()
+        return self.call("POST", "/api/position/calibrate", json={"physically_checked": True}).json()
 
     def return_position(self):
         return self.call("POST", "/api/position/return", json={"physically_checked": True}).json()
